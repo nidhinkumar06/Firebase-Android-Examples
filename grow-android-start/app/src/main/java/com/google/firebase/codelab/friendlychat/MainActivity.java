@@ -79,20 +79,7 @@ import de.hdodenhof.circleimageview.CircleImageView;
 public class MainActivity extends AppCompatActivity
         implements GoogleApiClient.OnConnectionFailedListener {
 
-    public static class MessageViewHolder extends RecyclerView.ViewHolder {
-        TextView messageTextView;
-        ImageView messageImageView;
-        TextView messengerTextView;
-        CircleImageView messengerImageView;
-
-        public MessageViewHolder(View v) {
-            super(v);
-            messageTextView = (TextView) itemView.findViewById(R.id.messageTextView);
-            messageImageView = (ImageView) itemView.findViewById(R.id.messageImageView);
-            messengerTextView = (TextView) itemView.findViewById(R.id.messengerTextView);
-            messengerImageView = (CircleImageView) itemView.findViewById(R.id.messengerImageView);
-        }
-    }
+    private FirebaseAnalytics mFirebaseAnalytics;
 
     private static final String TAG = "MainActivity";
     public static final String MESSAGES_CHILD = "messages";
@@ -120,6 +107,7 @@ public class MainActivity extends AppCompatActivity
     private FirebaseUser mFirebaseUser;
     private DatabaseReference mFirebaseDatabaseReference;
     private FirebaseRecyclerAdapter<FriendlyMessage, MessageViewHolder> mFirebaseAdapter;
+    private FirebaseRemoteConfig mFirebaseRemoteConfig;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -131,6 +119,7 @@ public class MainActivity extends AppCompatActivity
         // Initialize Firebase Auth
         mFirebaseAuth = FirebaseAuth.getInstance();
         mFirebaseUser = mFirebaseAuth.getCurrentUser();
+        mFirebaseAnalytics = FirebaseAnalytics.getInstance(this);
         if (mFirebaseUser == null) {
             // Not signed in, launch the Sign In activity
             startActivity(new Intent(this, SignInActivity.class));
@@ -149,8 +138,8 @@ public class MainActivity extends AppCompatActivity
                 .build();
 
         // Initialize ProgressBar and RecyclerView.
-        mProgressBar = (ProgressBar) findViewById(R.id.progressBar);
-        mMessageRecyclerView = (RecyclerView) findViewById(R.id.messageRecyclerView);
+        mProgressBar = findViewById(R.id.progressBar);
+        mMessageRecyclerView = findViewById(R.id.messageRecyclerView);
         mLinearLayoutManager = new LinearLayoutManager(this);
         mLinearLayoutManager.setStackFromEnd(true);
         mMessageRecyclerView.setLayoutManager(mLinearLayoutManager);
@@ -252,7 +241,7 @@ public class MainActivity extends AppCompatActivity
 
         mMessageRecyclerView.setAdapter(mFirebaseAdapter);
 
-        mMessageEditText = (EditText) findViewById(R.id.messageEditText);
+        mMessageEditText = findViewById(R.id.messageEditText);
         mMessageEditText.setFilters(new InputFilter[]{new InputFilter.LengthFilter(mSharedPreferences
                 .getInt(CodelabPreferences.FRIENDLY_MSG_LENGTH, DEFAULT_MSG_LENGTH_LIMIT))});
         mMessageEditText.addTextChangedListener(new TextWatcher() {
@@ -274,7 +263,7 @@ public class MainActivity extends AppCompatActivity
             }
         });
 
-        mSendButton = (Button) findViewById(R.id.sendButton);
+        mSendButton = findViewById(R.id.sendButton);
         mSendButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
@@ -290,7 +279,7 @@ public class MainActivity extends AppCompatActivity
             }
         });
 
-        mAddMessageImageView = (ImageView) findViewById(R.id.addMessageImageView);
+        mAddMessageImageView = findViewById(R.id.addMessageImageView);
         mAddMessageImageView.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
@@ -300,6 +289,51 @@ public class MainActivity extends AppCompatActivity
                 startActivityForResult(intent, REQUEST_IMAGE);
             }
         });
+        // Initialize Firebase Remote Config.
+        mFirebaseRemoteConfig = FirebaseRemoteConfig.getInstance();
+
+        // Define Firebase Remote Config Settings.
+        FirebaseRemoteConfigSettings firebaseRemoteConfigSettings =
+                new FirebaseRemoteConfigSettings.Builder()
+                        .setDeveloperModeEnabled(true)
+                        .build();
+
+        // Define default config values. Defaults are used when fetched config values are not
+        // available. Eg: if an error occurred fetching values from the server.
+        Map<String, Object> defaultConfigMap = new HashMap<>();
+        defaultConfigMap.put("friendly_msg_length", 10L);
+
+        // Apply config settings and default values.
+        mFirebaseRemoteConfig.setConfigSettings(firebaseRemoteConfigSettings);
+        mFirebaseRemoteConfig.setDefaults(defaultConfigMap);
+
+        // Fetch remote config.
+        fetchConfig();
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        switch (item.getItemId()) {
+            case R.id.crash_menu:
+                Log.w("Crashlytics", "Crash button clicked");
+                causeCrash();
+                return true;
+//            case R.id.invite_menu:
+//                sendInvitation();
+//                return true;
+            case R.id.fresh_config_menu:
+                fetchConfig();
+                return true;
+            case R.id.sign_out_menu:
+                mFirebaseAuth.signOut();
+                Auth.GoogleSignInApi.signOut(mGoogleApiClient);
+                mUsername = ANONYMOUS;
+                startActivity(new Intent(this, SignInActivity.class));
+                finish();
+                return true;
+            default:
+                return super.onOptionsItemSelected(item);
+        }
     }
 
     @Override
@@ -333,19 +367,8 @@ public class MainActivity extends AppCompatActivity
         return true;
     }
 
-    @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        switch (item.getItemId()) {
-            case R.id.sign_out_menu:
-                mFirebaseAuth.signOut();
-                Auth.GoogleSignInApi.signOut(mGoogleApiClient);
-                mUsername = ANONYMOUS;
-                startActivity(new Intent(this, SignInActivity.class));
-                finish();
-                return true;
-            default:
-                return super.onOptionsItemSelected(item);
-        }
+    private void logMessageSent() {
+        FirebaseAnalytics.getInstance(this).logEvent("message", null);
     }
 
     @Override
@@ -414,7 +437,71 @@ public class MainActivity extends AppCompatActivity
                 });
     }
 
-    private void logMessageSent() {
+    private void causeCrash() {
+        Crashlytics.getInstance().crash();
+    }
+
+    public void fetchConfig() {
+        long cacheExpiration = 3600; // 1 hour in seconds
+        // If developer mode is enabled reduce cacheExpiration to 0 so that
+        // each fetch goes to the server. This should not be used in release
+        // builds.
+        if (mFirebaseRemoteConfig.getInfo().getConfigSettings()
+                .isDeveloperModeEnabled()) {
+            cacheExpiration = 0;
+        }
+        mFirebaseRemoteConfig.fetch(cacheExpiration)
+                .addOnSuccessListener(new OnSuccessListener<Void>() {
+                    @Override
+                    public void onSuccess(Void aVoid) {
+                        // Make the fetched config available via
+                        // FirebaseRemoteConfig get<type> calls.
+                        mFirebaseRemoteConfig.activateFetched();
+                        applyRetrievedLengthLimit();
+                    }
+                })
+                .addOnFailureListener(new OnFailureListener() {
+                    @Override
+                    public void onFailure(@NonNull Exception e) {
+                        // There has been an error fetching the config
+                        Log.w(TAG, "Error fetching config: " +
+                                e.getMessage());
+                        applyRetrievedLengthLimit();
+                    }
+                });
+        // print app's Instance ID token.
+        FirebaseInstanceId.getInstance().getInstanceId().addOnCompleteListener(new OnCompleteListener<InstanceIdResult>() {
+            @Override
+            public void onComplete(@NonNull Task<InstanceIdResult> task) {
+                if (task.isSuccessful()) {
+                    Log.d(TAG, "Remote instance ID token: " + task.getResult().getToken());
+                }
+            }
+        });
+
+    }
+
+    private void applyRetrievedLengthLimit() {
+        Long friendly_msg_length =
+                mFirebaseRemoteConfig.getLong("friendly_msg_length");
+        mMessageEditText.setFilters(new InputFilter[]{new
+                InputFilter.LengthFilter(friendly_msg_length.intValue())});
+        Log.d(TAG, "FML is: " + friendly_msg_length);
+    }
+
+    public static class MessageViewHolder extends RecyclerView.ViewHolder {
+        TextView messageTextView;
+        ImageView messageImageView;
+        TextView messengerTextView;
+        CircleImageView messengerImageView;
+
+        public MessageViewHolder(View v) {
+            super(v);
+            messageTextView = itemView.findViewById(R.id.messageTextView);
+            messageImageView = itemView.findViewById(R.id.messageImageView);
+            messengerTextView = itemView.findViewById(R.id.messengerTextView);
+            messengerImageView = itemView.findViewById(R.id.messengerImageView);
+        }
     }
 
 }
